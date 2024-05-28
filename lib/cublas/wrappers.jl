@@ -1889,87 +1889,160 @@ end
 
 ## getrsBatched - solves system of linear equations
 
-for (fname, elty) in ((:cublasDgetrsBatched, :Float64),
-                      (:cublasSgetrsBatched, :Float32),
-                      (:cublasZgetrsBatched, :ComplexF64),
-                      (:cublasCgetrsBatched, :ComplexF32))
+for (fname, elty) in ((:cublasSgetrsBatched, :Float32),
+                      (:cublasDgetrsBatched, :Float64),
+                      (:cublasCgetrsBatched, :ComplexF32),
+                      (:cublasZgetrsBatched, :ComplexF64))
     @eval begin
         function getrs_batched!(trans::Char,
-                                n, nrhs,
-                                Aptrs::CuVector{CuPtr{$elty}}, lda,
-                                pivotArray::CuPtr,
-                                Bptrs::CuVector{CuPtr{$elty}}, ldb)
+                                A::Vector{<:StridedCuMatrix{$elty}},
+                                B::Vector{<:StridedCuMatrix{$elty}})
+            for (As,Bs) in zip(A,B)
+                m,n = size(As)
+                if m != n
+                    throw(DimensionMismatch("All A matrices must be square!"))
+                end
+                o = size(Bs,1)
+                if m != o
+                    throw(DimensionMismatch("Rows in A and B must be equal!"))
+                end
+            end
+            m,n = size(A[1])
+            lda = max(1,stride(A[1],2))
+            ldb = max(1,stride(B[1],2))
+            nrhs = size(B[1],2)
+
+            Aptrs = unsafe_batch(A)
+            Bptrs = unsafe_batch(B)
+
             batchSize = length(Aptrs)
             info = Ref{Cint}()
-            $fname(handle(), trans, n, nrhs, Aptrs, lda, pivotArray, Bptrs, ldb, info, batchSize)
+
+            $fname(handle(), trans, n, nrhs, Aptrs, lda, CU_NULL, Bptrs, ldb, info, batchSize)
             unsafe_free!(Aptrs)
             unsafe_free!(Bptrs)
 
-            return info
+            return info[], B
         end
+
+        function getrs_batched!(trans::Char,
+                                A::Vector{<:StridedCuMatrix{$elty}},
+                                pivot::CuMatrix{Cint},
+                                B::Vector{<:StridedCuMatrix{$elty}})
+            for (As,Bs) in zip(A,B)
+                m,n = size(As)
+                if m != n
+                    throw(DimensionMismatch("All A matrices must be square!"))
+                end
+                o = size(Bs,1)
+                if m != o
+                    throw(DimensionMismatch("Rows in A and B must be equal!"))
+                end
+            end
+            m,n = size(A[1])
+            lda = max(1,stride(A[1],2))
+            ldb = max(1,stride(B[1],2))
+            nrhs = size(B[1],2)
+
+            Aptrs = unsafe_batch(A)
+            Bptrs = unsafe_batch(B)
+
+            batchSize = length(Aptrs)
+            info = Ref{Cint}()
+
+            $fname(handle(), trans, n, nrhs, Aptrs, lda, pivot, Bptrs, ldb, info, batchSize)
+            unsafe_free!(Aptrs)
+            unsafe_free!(Bptrs)
+
+            return info[], B
+        end
+
+        # CUDA has no strided batched getrs, but we can at least avoid constructing costly views
+        function getrs_strided_batched!(trans::Char,
+                                        A::DenseCuArray{$elty, 3},
+                                        B::DenseCuArray{$elty, 3})
+            m,n = size(A,1), size(A,2)
+            if m != n
+                throw(DimensionMismatch("All matrices must be square!"))
+            end
+            o = size(B,1)
+            if m != o
+                throw(DimensionMismatch("Rows in A and B must be equal!"))
+            end
+            lda = max(1,stride(A,2))
+            ldb = max(1,stride(B,2))
+            nrhs = size(B,2)
+
+            Aptrs = unsafe_strided_batch(A)
+            Bptrs = unsafe_strided_batch(B)
+
+            batchSize = length(Aptrs)
+            info = Ref{Cint}()
+
+            $fname(handle(), trans, n, nrhs, Aptrs, lda, CU_NULL, Bptrs, ldb, info, batchSize)
+            unsafe_free!(Aptrs)
+            unsafe_free!(Bptrs)
+
+            return info[], B
+        end
+
+        function getrs_strided_batched!(trans::Char,
+                                        A::DenseCuArray{$elty, 3},
+                                        pivot::CuMatrix{Cint},
+                                        B::DenseCuArray{$elty, 3})
+            m,n = size(A,1), size(A,2)
+            if m != n
+                throw(DimensionMismatch("All matrices must be square!"))
+            end
+            o = size(B,1)
+            if m != o
+                throw(DimensionMismatch("Rows in A and B must be equal!"))
+            end
+            lda = max(1,stride(A,2))
+            ldb = max(1,stride(B,2))
+            nrhs = size(B,2)
+
+            Aptrs = unsafe_strided_batch(A)
+            Bptrs = unsafe_strided_batch(B)
+
+            batchSize = length(Aptrs)
+            info = Ref{Cint}()
+
+            $fname(handle(), trans, n, nrhs, Aptrs, lda, pivot, Bptrs, ldb, info, batchSize)
+            unsafe_free!(Aptrs)
+            unsafe_free!(Bptrs)
+
+            return info[], B
+        end
+
     end
 end
 
-function getrs_batched!(trans::Char,
-                        A::Vector{<:StridedCuMatrix},
-                        pivotArray::Union{Nothing,CuMatrix{Cint}},
-                        B::Vector{<:StridedCuMatrix})
-    for (As,Bs) in zip(A,B)
-        m,n = size(As)
-        if m != n
-            throw(DimensionMismatch("All A matrices must be square!"))
-        end
-        o = size(Bs,1)
-        if m != o
-            throw(DimensionMismatch("Rows in A and B must be equal!"))
-        end
-    end
-    m,n = size(A[1])
-    lda = max(1,stride(A[1],2))
-    ldb = max(1,stride(B[1],2))
-    nrhs = size(B[1],2)
-
-    Aptrs = unsafe_batch(A)
-    Bptrs = unsafe_batch(B)
-    pivotptr = isnothing(pivotArray) ? CU_NULL : pointer(pivotArray)
-    return getrs_batched!(trans, n, nrhs, Aptrs, lda, pivotptr, Bptrs, ldb), B
-end
 function getrs_batched(trans::Char,
                        A::Vector{<:StridedCuMatrix},
-                       pivotArray::Union{Nothing,CuMatrix{Cint}},
+                       pivot::CuMatrix{Cint},
                        B::Vector{<:StridedCuMatrix})
-    getrs_batched!(trans, A, pivotArray, deepcopy(B))
+    getrs_batched!(trans, A, pivot, deepcopy(B))
 end
 
-# CUDA has no strided batched getrs, but we can at least avoid constructing costly views
-function getrs_strided_batched!(trans::Char,
-                                A::DenseCuArray{<:Any, 3},
-                                pivotArray::Union{Nothing,CuMatrix{Cint}},
-                                B::DenseCuArray{<:Any, 3})
-    m,n = size(A,1), size(A,2)
-    if m != n
-        throw(DimensionMismatch("All matrices must be square!"))
-    end
-    o = size(B,1)
-    if m != o
-        throw(DimensionMismatch("Rows in A and B must be equal!"))
-    end
-    lda = max(1,stride(A,2))
-    ldb = max(1,stride(B,2))
-    nrhs = size(B,2)
-
-    Aptrs = unsafe_strided_batch(A)
-    Bptrs = unsafe_strided_batch(B)
-    pivotptr = isnothing(pivotArray) ? CU_NULL : pointer(pivotArray)
-    return getrs_batched!(trans, n, nrhs, Aptrs, lda, pivotptr, Bptrs, ldb), B
+function getrs_batched(trans::Char,
+                       A::Vector{<:StridedCuMatrix},
+                       B::Vector{<:StridedCuMatrix})
+    getrs_batched!(trans, A, deepcopy(B))
 end
+
 function getrs_strided_batched(trans::Char,
                                A::DenseCuArray{<:Any, 3},
-                               pivotArray::Union{Nothing,CuMatrix{Cint}},
                                B::DenseCuArray{<:Any, 3})
-    getrs_strided_batched!(trans, A, pivotArray, copy(B))
+    getrs_strided_batched!(trans, A, copy(B))
 end
 
+function getrs_strided_batched(trans::Char,
+                               A::DenseCuArray{<:Any, 3},
+                               pivot::CuMatrix{Cint},
+                               B::DenseCuArray{<:Any, 3})
+    getrs_strided_batched!(trans, A, pivot, copy(B))
+end
 
 ## getriBatched - performs batched matrix inversion
 for (fname, elty) in ((:cublasDgetriBatched, :Float64),
